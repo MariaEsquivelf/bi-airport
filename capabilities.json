@@ -1,0 +1,86 @@
+{
+  "dataRoles": [
+    { "name": "gate", "kind": "Grouping", "displayName": "Gate" },
+    { "name": "parentGate", "kind": "Grouping", "displayName": "Parent Gate (Wide-body)" },
+
+    { "name": "actualColor", "kind": "Grouping", "displayName": "Color/Legend" },
+    { "name": "actualText", "kind": "Grouping", "displayName": "Resource Label" },
+
+    { "name": "actualStart", "kind": "Grouping", "displayName": "Actual Start" },
+    { "name": "actualEnd", "kind": "Grouping", "displayName": "Actual End" },
+
+    { "name": "scheduledStart", "kind": "Grouping", "displayName": "Scheduled Start" },
+    { "name": "scheduledEnd", "kind": "Grouping", "displayName": "Scheduled End" },
+
+    { "name": "groundStart", "kind": "Grouping", "displayName": "Ground Start" },
+    { "name": "groundEnd", "kind": "Grouping", "displayName": "Ground End" },
+    
+    { "name": "landedTime", "kind": "Grouping", "displayName": "Landed Time" },
+    { "name": "operationTime", "kind": "Grouping", "displayName": "Operation Time" },
+
+    { "name": "towOn", "kind": "Grouping", "displayName": "Tow On" },
+    { "name": "towOnStatus", "kind": "Grouping", "displayName": "Tow On Status" },
+
+    { "name": "towOff", "kind": "Grouping", "displayName": "Tow Off" },
+    { "name": "towOffStatus", "kind": "Grouping", "displayName": "Tow Off Status" },
+
+    { "name": "airline", "kind": "Grouping", "displayName": "Airline" },
+    { "name": "flightNumber", "kind": "Grouping", "displayName": "Flight Number" },
+    { "name": "tailNumber", "kind": "Grouping", "displayName": "Tail Number" },
+    { "name": "aircraftModel", "kind": "Grouping", "displayName": "Aircraft Model" },
+    { "name": "turnId", "kind": "Grouping", "displayName": "Turn ID" },
+    { "name": "turnDuration", "kind": "Grouping", "displayName": "Turn Duration" },
+    { "name": "terminal", "kind": "Grouping", "displayName": "Terminal" },
+    { "name": "domesticIntl", "kind": "Grouping", "displayName": "Domestic/International" },
+    
+    { "name": "tooltips", "kind": "Grouping", "displayName": "Tooltips", "description": "Up to 10 fields for hover tooltips" }
+  ],
+
+  "dataViewMappings": [
+    {
+      "table": {
+        "rows": {
+          "select": [
+            { "for": { "in": "gate" } },
+            { "for": { "in": "parentGate" } },
+
+            { "for": { "in": "actualColor" } },
+            { "for": { "in": "actualText" } },
+
+            { "for": { "in": "actualStart" } },
+            { "for": { "in": "actualEnd" } },
+
+            { "for": { "in": "scheduledStart" } },
+            { "for": { "in": "scheduledEnd" } },
+
+            { "for": { "in": "groundStart" } },
+            { "for": { "in": "groundEnd" } },
+            
+            { "for": { "in": "landedTime" } },
+            { "for": { "in": "operationTime" } },
+
+            { "for": { "in": "towOn" } },
+            { "for": { "in": "towOnStatus" } },
+
+            { "for": { "in": "towOff" } },
+            { "for": { "in": "towOffStatus" } },
+
+            { "for": { "in": "airline" } },
+            { "for": { "in": "flightNumber" } },
+            { "for": { "in": "tailNumber" } },
+            { "for": { "in": "aircraftModel" } },
+            { "for": { "in": "turnId" } },
+            { "for": { "in": "turnDuration" } },
+            { "for": { "in": "terminal" } },
+            { "for": { "in": "domesticIntl" } },
+            
+            { "for": { "in": "tooltips" } }
+          ]
+        }
+      }
+    }
+  ],
+
+  "objects": {},
+  "privileges": []
+}
