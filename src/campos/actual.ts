@@ -13,10 +13,63 @@ export function renderActualBars(
   host: powerbi.extensibility.visual.IVisualHost,
   colorDimension: string = "actualColor"
 ) {
-  // ✅ barras “actual” usando fallback Tow_On / Tow_Off
-  const rows = data.rows.filter(d => (d.actualStart || d.towOn) && (d.actualEnd || d.towOff));
 
-  const barH = Math.max(8, y.bandwidth() * 0.55);
+  const rows = data.rows.filter(d => {
+    if (!(d.actualStart || d.towOn) && !(d.actualEnd || d.towOff)) return false;
+
+    const start = d.actualStart || d.towOn;
+    const end = d.actualEnd || d.towOff;
+
+    // Show bar if it overlaps with the time domain (even partially)
+    const [domainStart, domainEnd] = data.timeDomain;
+
+    // Bar overlaps if: start < domainEnd AND end > domainStart
+    if (start && end) {
+      return start < domainEnd && end > domainStart;
+    }
+    // If only start exists, show if it's within domain
+    if (start) {
+      return start < domainEnd;
+    }
+    // If only end exists, show if it's within domain
+    if (end) {
+      return end > domainStart;
+    }
+
+    return false;
+  });
+
+  // Group rows by parentGate to identify wide-body aircraft
+  const wideBodyGroups = new Map<string, FlightRow[]>();
+  const wideBodyKeys = new Set<string>();
+
+  rows.forEach(row => {
+    if (row.parentGate) {
+      const startTime = row.actualStart || row.towOn;
+      const key = `${row.parentGate}|${startTime?.getTime()}`;
+
+      if (!wideBodyGroups.has(key)) {
+        wideBodyGroups.set(key, []);
+      }
+      wideBodyGroups.get(key)!.push(row);
+      wideBodyKeys.add(key);
+    }
+  });
+
+  // Filter out duplicate wide-body rows - keep only the FIRST occurrence
+  const rowsToRender = rows.filter(row => {
+    if (row.parentGate) {
+      const startTime = row.actualStart || row.towOn;
+      const key = `${row.parentGate}|${startTime?.getTime()}`;
+
+      // Keep only if this is the first gate in the group
+      const group = wideBodyGroups.get(key) || [];
+      return group.length > 0 && row.gate === group[0].gate;
+    }
+    return true; // Keep non-wide-body rows
+  });
+
+  const barH = Math.max(8, y.bandwidth() * 0.38);
   const yOffset = (y.bandwidth() - barH) / 2;
 
   const startTime = (d: FlightRow): Date => (d.actualStart ?? d.towOn) as Date;
@@ -25,11 +78,12 @@ export function renderActualBars(
   const sel = g
     .selectAll<SVGRectElement, FlightRow>("rect.actual-bar")
     .data(
-      rows,
+      rowsToRender,
       (d: FlightRow) => {
         const s = startTime(d).toISOString();
         const e = endTime(d).toISOString();
-        return `${d.gate}|${s}|${e}`; // ✅ key estable
+        const key = d.parentGate ? `${d.parentGate}|${s}|${e}` : `${d.gate}|${s}|${e}`;
+        return key;
       }
     );
 
@@ -39,10 +93,70 @@ export function renderActualBars(
     .attr("rx", 16)
     .attr("ry", 16)
     .merge(sel as any)
-    .attr("x", (d: FlightRow) => x(startTime(d)))
-    .attr("y", (d: FlightRow) => (y(d.gate) ?? 0) + yOffset)
-    .attr("width", (d: FlightRow) => Math.max(1, x(endTime(d)) - x(startTime(d))))
-    .attr("height", barH)
+    .attr("x", (d: FlightRow) => {
+      const xPos = x(startTime(d));
+      return Math.max(0, xPos);
+    })
+    .attr("y", (d: FlightRow) => {
+      const yPos = y(d.gate) ?? 0;
+
+
+      // For wide-body aircraft, span across multiple gates
+      if (d.parentGate) {
+        const st = startTime(d);
+        const key = `${d.parentGate}|${st.getTime()}`;
+        const groupRows = wideBodyGroups.get(key) || [];
+
+        if (groupRows.length >= 2) {
+          // Get all gate positions for this wide-body
+          const gatePositions = groupRows
+            .map(r => y(r.gate))
+            .filter(p => p !== undefined) as number[];
+
+          if (gatePositions.length >= 2) {
+            // Start from the topmost gate
+            return Math.min(...gatePositions) + yOffset;
+          }
+        }
+      }
+
+      return yPos + yOffset;
+    })
+    .attr("width", (d: FlightRow) => {
+      const xStart = x(startTime(d));
+      const xEnd = x(endTime(d));
+      const xRange = x.range();
+      const maxX = xRange[1];
+
+      const clampedStart = Math.max(0, xStart);
+      const clampedEnd = Math.min(maxX, xEnd);
+
+      return Math.max(1, clampedEnd - clampedStart);
+    })
+    .attr("height", (d: FlightRow) => {
+      // For wide-body aircraft, span the height of both gates
+      if (d.parentGate) {
+        const st = startTime(d);
+        const key = `${d.parentGate}|${st.getTime()}`;
+        const groupRows = wideBodyGroups.get(key) || [];
+
+        if (groupRows.length >= 2) {
+          const gatePositions = groupRows
+            .map(r => y(r.gate))
+            .filter(p => p !== undefined) as number[];
+
+          if (gatePositions.length >= 2) {
+            // Calculate height spanning from min to max gate position
+            const minY = Math.min(...gatePositions);
+            const maxY = Math.max(...gatePositions);
+            const spanHeight = maxY - minY + y.bandwidth();
+            return spanHeight - (yOffset * 2);
+          }
+        }
+      }
+
+      return barH;
+    })
     .attr("fill", (d: FlightRow) => color(getColorKey(d, colorDimension)))
     .style("cursor", "pointer")
     .style("opacity", 1);

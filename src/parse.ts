@@ -14,6 +14,7 @@ export interface FilterCriteria {
 }
 
 export function applyFilters(rows: FlightRow[], filters: FilterCriteria): FlightRow[] {
+
   return rows.filter(row => {
     // Filter by date (si está setear, comparar solo la fecha)
     if (filters.date) {
@@ -21,42 +22,72 @@ export function applyFilters(rows: FlightRow[], filters: FilterCriteria): Flight
       if (rowDate) {
         const rowDateOnly = new Date(rowDate.getFullYear(), rowDate.getMonth(), rowDate.getDate());
         const filterDateOnly = new Date(filters.date.getFullYear(), filters.date.getMonth(), filters.date.getDate());
-        if (rowDateOnly.getTime() !== filterDateOnly.getTime()) return false;
+        if (rowDateOnly.getTime() !== filterDateOnly.getTime()) {
+          return false;
+        }
       }
     }
 
-    // Filter by time window (hora del día)
-    if (filters.timeMin >= 0 || filters.timeMax < 24) {
-      const startTime = row.actualStart || row.towOn;
-      if (startTime) {
-        const hour = startTime.getHours();
-        if (hour < filters.timeMin || hour > filters.timeMax) return false;
-      }
-    }
+    // NOTE: Time filter removed - now controls viewport instead of filtering rows
 
     // Filter by terminal
     if (filters.terminal && row.terminal && !row.terminal.toLowerCase().includes(filters.terminal.toLowerCase())) {
       return false;
     }
 
-    // Filter by gate
-    if (filters.gate && !row.gate.toLowerCase().includes(filters.gate.toLowerCase())) {
-      return false;
+    // Filter by gate - include both gates for wide-body aircraft
+    if (filters.gate) {
+      const gateMatch = row.gate.toLowerCase().includes(filters.gate.toLowerCase());
+
+      // If this row is part of a wide-body, also check if the filter matches the parent gate
+      let parentGateMatch = false;
+      if (row.parentGate) {
+        parentGateMatch = row.parentGate.toLowerCase().includes(filters.gate.toLowerCase());
+      }
+
+      // Keep row if either the gate itself matches OR the parent gate matches
+      if (!gateMatch && !parentGateMatch) {
+        return false;
+      }
     }
 
     // Filter by airline
-    if (filters.airline && row.airline && !row.airline.toLowerCase().includes(filters.airline.toLowerCase())) {
-      return false;
+    if (filters.airline) {
+      // Try to get airline from airline field or use actualColor as fallback
+      let airlineToCheck = row.airline;
+
+      // If no airline field, use actualColor (which often contains airline code like UA, WN)
+      if (!airlineToCheck && row.actualColor) {
+        airlineToCheck = row.actualColor;
+      }
+
+
+      if (!airlineToCheck || !airlineToCheck.toLowerCase().includes(filters.airline.toLowerCase())) {
+        return false;
+      }
     }
 
     // Filter by flight number
-    if (filters.flightNumber && row.flightNumber && !row.flightNumber.toLowerCase().includes(filters.flightNumber.toLowerCase())) {
-      return false;
+    if (filters.flightNumber) {
+      // Try to get flight number from flightNumber field or extract from actualText
+      let flightNumberToCheck = row.flightNumber;
+
+      // If no flightNumber field, try to extract from actualText (e.g., "UA 123/UA 36")
+      if (!flightNumberToCheck && row.actualText) {
+        flightNumberToCheck = row.actualText;
+      }
+
+
+      if (!flightNumberToCheck || !flightNumberToCheck.toLowerCase().includes(filters.flightNumber.toLowerCase())) {
+        return false;
+      }
     }
 
     // Filter by tail
-    if (filters.tail && row.tailNumber && !row.tailNumber.toLowerCase().includes(filters.tail.toLowerCase())) {
-      return false;
+    if (filters.tail) {
+      if (!row.tailNumber || !row.tailNumber.toLowerCase().includes(filters.tail.toLowerCase())) {
+        return false;
+      }
     }
 
     return true;
@@ -77,11 +108,37 @@ export function parseDataView(
     columns.findIndex(c => (c.roles as any)?.[roleName]);
 
   // ✅ REQUISITO 2a-ii: Mapping de parent gates a child gates para wide-body aircraft
-  // Ejemplo: A17W (wide-body) ocupa A17 y A15
-  const PARENT_TO_CHILDREN: Record<string, string[]> = {
-    "A17W": ["A17", "A15"],
-    "A33W": ["A33", "A31"],
-    // Agregar más mappings según configuración del aeropuerto
+  // Lógica automática: si el gate termina en "W", ocupa 2 portones
+  // Ejemplo: A17W ocupa A17 y A19 (el gate con el mismo número sin W, y el siguiente)
+  // Ejemplo: A33W ocupa A33 y A35 (el gate base y el siguiente +2)
+
+  // Helper function para calcular gates adyacentes
+  const getAdjacentGates = (wideBodyGate: string): string[] | null => {
+    if (!wideBodyGate.endsWith("W")) return null;
+
+    // Remover la "W" para obtener el gate base
+    const baseGate = wideBodyGate.slice(0, -1);
+
+    // Extraer el prefijo de letra y el número
+    const match = baseGate.match(/^([A-Z]+)(\d+)$/);
+    if (!match) return null;
+
+    const prefix = match[1]; // e.g., "A"
+    const gateNum = parseInt(match[2]); // e.g., 17
+
+    // El wide-body ocupa el gate base y el siguiente (+2)
+    // A17W -> A17 y A19
+    // A33W -> A33 y A35
+    // B39W -> B39 y B41
+    const nextNum = gateNum + 2;
+    const nextGate = `${prefix}${nextNum}`;
+
+    return [baseGate, nextGate];
+  };
+
+  // Mappings manuales (sobrescriben la lógica automática si es necesario)
+  const MANUAL_PARENT_TO_CHILDREN: Record<string, string[]> = {
+    // Ejemplo: "A17W": ["A17", "A15"] si la lógica por defecto no aplica
   };
 
   const idx = {
@@ -177,13 +234,23 @@ export function parseDataView(
     };
 
     // ✅ REQUISITO 2a-ii: Si hay parent gate (wide-body), duplicar en gates hijos
-    if (parentGate && PARENT_TO_CHILDREN[parentGate]) {
-      const childGates = PARENT_TO_CHILDREN[parentGate];
+    let childGates: string[] | null = null;
+
+    if (parentGate) {
+      // Primero verificar mappings manuales
+      childGates = MANUAL_PARENT_TO_CHILDREN[parentGate] || getAdjacentGates(parentGate);
+    } else if (gate.endsWith("W")) {
+      // Si el gate mismo termina en "W", tratarlo como wide-body
+      childGates = MANUAL_PARENT_TO_CHILDREN[gate] || getAdjacentGates(gate);
+    }
+
+    if (childGates && childGates.length > 0) {
+      // Duplicar la fila para cada gate hijo
       childGates.forEach(childGate => {
         parsedRows.push({
           ...flightRow,
           gate: childGate,
-          parentGate: parentGate // Mantener referencia al parent
+          parentGate: parentGate || gate // Mantener referencia al parent original
         });
       });
     } else {
@@ -194,7 +261,17 @@ export function parseDataView(
 
   if (!parsedRows.length) return null;
 
-  const gates = Array.from(new Set(parsedRows.map(d => d.gate))).sort();
+  // ✅ Show all gates including W gates and child gates for proper Y-axis spacing
+  const gatesSet = new Set<string>();
+
+  parsedRows.forEach(d => {
+    gatesSet.add(d.gate); // Add the actual gate (child gate like A33, A35)
+    if (d.parentGate) {
+      gatesSet.add(d.parentGate); // Add the parent W gate (like A33W)
+    }
+  });
+
+  const gates = Array.from(gatesSet).sort();
 
   const allDates: Date[] = [];
   parsedRows.forEach(d => {

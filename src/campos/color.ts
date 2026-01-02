@@ -23,7 +23,7 @@ const STATUS_COLORS: { [key: string]: string } = {
 };
 
 export function buildColorScale(
-  data: ParsedData, 
+  data: ParsedData,
   colorDimension: string = "actualColor"
 ): d3.ScaleOrdinal<string, string> {
   const getDimensionValue = (row: FlightRow): string | null => {
@@ -76,12 +76,12 @@ export function getStatusColor(row: FlightRow): string {
     if (delay < -5 * 60 * 1000) return STATUS_COLORS["on-time"];  // Early
     return STATUS_COLORS["on-time"];
   }
-  
+
   // Si solo tiene estimated tow times
-  if (row.towOnStatus?.toLowerCase().includes("estimated") || 
+  if (row.towOnStatus?.toLowerCase().includes("estimated") ||
       row.towOffStatus?.toLowerCase().includes("estimated")) {
     return STATUS_COLORS["estimated"];
   }
-  
+
   return STATUS_COLORS["default"];
 }

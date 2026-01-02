@@ -102,13 +102,13 @@ export class Visual implements IVisual {
       wrapper.style.display = "flex";
       wrapper.style.flexDirection = "column";
       wrapper.style.gap = "4px";
-      
+
       const labelEl = document.createElement("label");
       labelEl.textContent = label;
       labelEl.style.fontSize = "11px";
       labelEl.style.fontWeight = "600";
       labelEl.style.color = "#333";
-      
+
       let input: HTMLElement;
       if (type === 'date') {
         input = document.createElement("input");
@@ -118,16 +118,16 @@ export class Visual implements IVisual {
       } else {
         input = document.createElement("input");
         (input as HTMLInputElement).type = "text";
-        (input as HTMLInputElement).placeholder = label;
+        (input as HTMLInputElement).placeholder = id === "filter-time" ? "e.g. 8-16 (start-end)" : label;
       }
-      
+
       (input as any).id = id;
       (input as any).style.padding = "6px 8px";
       (input as any).style.fontSize = "11px";
       (input as any).style.border = "1px solid #ccc";
       (input as any).style.borderRadius = "3px";
       (input as any).style.minWidth = "100px";
-      
+
       wrapper.appendChild(labelEl);
       wrapper.appendChild(input);
       filterBar.appendChild(wrapper);
@@ -136,7 +136,7 @@ export class Visual implements IVisual {
 
     // Add filter controls
     createFilterControl("Date", "filter-date", "date");
-    createFilterControl("Time (0-24h)", "filter-time", "text");
+    createFilterControl("Time View (hr)", "filter-time", "text");
     createFilterControl("Terminal", "filter-terminal", "text");
     createFilterControl("Gate", "filter-gate", "text");
     createFilterControl("Airline", "filter-airline", "text");
@@ -145,7 +145,7 @@ export class Visual implements IVisual {
 
     // ✅ Add event listeners to filters
     const updateFilterHandler = () => this.applyFiltersAndUpdate();
-    
+
     document.getElementById("filter-date")?.addEventListener("change", updateFilterHandler);
     document.getElementById("filter-time")?.addEventListener("change", updateFilterHandler);
     document.getElementById("filter-terminal")?.addEventListener("input", updateFilterHandler);
@@ -385,17 +385,38 @@ export class Visual implements IVisual {
       }
     }
 
-    // Apply filters to data
+
+
     const filteredRows = applyFilters(this.data.rows, this.filters);
-    
+
+
+
     // Update gates based on filtered data
     const filteredGates = Array.from(new Set(filteredRows.map((d) => d.gate))).sort();
 
-    // Re-render with filtered data
+    // Adjust timeDomain based on time range (viewport control, not filter)
+    let adjustedTimeDomain: [Date, Date] = this.data.timeDomain;
+
+    if (this.filters.timeMin > 0 || this.filters.timeMax < 24) {
+      // Get the date from the first data point
+      const baseDate = this.data.timeDomain[0];
+      const year = baseDate.getFullYear();
+      const month = baseDate.getMonth();
+      const day = baseDate.getDate();
+
+      // Create new time domain with specified hours
+      const startDate = new Date(year, month, day, this.filters.timeMin, 0, 0);
+      const endDate = new Date(year, month, day, this.filters.timeMax, 0, 0);
+
+      adjustedTimeDomain = [startDate, endDate];
+
+    }
+
+    // Re-render with filtered data and adjusted time domain
     const filteredData: ParsedData = {
       rows: filteredRows,
       gates: filteredGates,
-      timeDomain: this.data.timeDomain
+      timeDomain: adjustedTimeDomain
     };
 
     // Clear SVG layers
@@ -408,7 +429,7 @@ export class Visual implements IVisual {
     // Re-render (simplified - sin viewport update para mantener simple)
     // En update() hay lógica completa, aquí hacemos lo mismo
     const viewport = { width: this.scroll.clientWidth, height: this.scroll.clientHeight };
-    
+
     // Recalcular scales con datos filtrados
     const t0 = filteredData.timeDomain[0];
     const t1 = filteredData.timeDomain[1];

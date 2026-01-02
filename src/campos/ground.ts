@@ -8,15 +8,52 @@ export function renderGroundLines(
   x: d3.ScaleTime<number, number>,
   y: d3.ScaleBand<string>
 ) {
-  const rows = data.rows.filter(d => d.groundStart && d.groundEnd);
+  // Filter: keep rows that have start AND end time, and overlap with viewport
+  const rows = data.rows.filter(d => {
+    if (!d.groundStart || !d.groundEnd) return false;
+    
+    // Show bar if it overlaps with the time domain (even partially)
+    const [domainStart, domainEnd] = data.timeDomain;
+    
+    // Bar overlaps if: start < domainEnd AND end > domainStart
+    return d.groundStart < domainEnd && d.groundEnd > domainStart;
+  });
+
+  // Group rows by parentGate to identify wide-body aircraft
+  const wideBodyGroups = new Map<string, any[]>();
+  const wideBodyKeys = new Set<string>();
+  
+  rows.forEach(row => {
+    if (row.parentGate) {
+      const key = `${row.parentGate}|${row.groundStart?.getTime()}`;
+      
+      if (!wideBodyGroups.has(key)) {
+        wideBodyGroups.set(key, []);
+      }
+      wideBodyGroups.get(key)!.push(row);
+      wideBodyKeys.add(key);
+    }
+  });
+
+  // Filter out duplicate wide-body rows - keep only the FIRST occurrence
+  const rowsToRender = rows.filter(row => {
+    if (row.parentGate) {
+      const key = `${row.parentGate}|${row.groundStart?.getTime()}`;
+      
+      // Keep only if this is the first gate in the group
+      const group = wideBodyGroups.get(key) || [];
+      return group.length > 0 && row.gate === group[0].gate;
+    }
+    return true; // Keep non-wide-body rows
+  });
 
   // Determinar si usar visualización básica o stacked bars
-  const hasDetailedTimes = rows.some(d => d.landedTime || d.operationTime);
+  const hasDetailedTimes = rowsToRender.some(d => d.landedTime || d.operationTime);
 
   if (hasDetailedTimes) {
-    renderStackedGroundBars(g, rows, x, y);
+    renderStackedGroundBars(g, rowsToRender, x, y, wideBodyGroups);
   } else {
-    renderSimpleGroundLines(g, rows, x, y);
+    renderSimpleGroundLines(g, rowsToRender, x, y, wideBodyGroups);
   }
 }
 
@@ -24,7 +61,8 @@ function renderSimpleGroundLines(
   g: d3.Selection<SVGGElement, unknown, null, undefined>,
   rows: any[],
   x: d3.ScaleTime<number, number>,
-  y: d3.ScaleBand<string>
+  y: d3.ScaleBand<string>,
+  wideBodyGroups: Map<string, any[]>
 ) {
   const sel = g.selectAll<SVGLineElement, any>("line.ground-line")
     .data(rows, (d: any) => `${d.gate}|${d.groundStart}|${d.groundEnd}`);
@@ -33,10 +71,58 @@ function renderSimpleGroundLines(
     .append("line")
     .attr("class", "ground-line")
     .merge(sel as any)
-    .attr("x1", (d: any) => x(d.groundStart!))
-    .attr("x2", (d: any) => x(d.groundEnd!))
-    .attr("y1", (d: any) => (y(d.gate) ?? 0) + y.bandwidth() * 0.20)
-    .attr("y2", (d: any) => (y(d.gate) ?? 0) + y.bandwidth() * 0.20);
+    .attr("x1", (d: any) => {
+      const xPos = x(d.groundStart!);
+      const xRange = x.range();
+      return Math.max(xRange[0], Math.min(xRange[1], xPos));
+    })
+    .attr("x2", (d: any) => {
+      const xPos = x(d.groundEnd!);
+      const xRange = x.range();
+      return Math.max(xRange[0], Math.min(xRange[1], xPos));
+    })
+    .attr("y1", (d: any) => {
+      const yPos = y(d.gate) ?? 0;
+      
+      // For wide-body aircraft, position at the TOP of the topmost gate
+      if (d.parentGate) {
+        const key = `${d.parentGate}|${d.groundStart?.getTime()}`;
+        const groupRows = wideBodyGroups.get(key) || [];
+        if (groupRows.length >= 2) {
+          const gatePositions = groupRows
+            .map((r: any) => y(r.gate))
+            .filter((p: any) => p !== undefined) as number[];
+          
+          if (gatePositions.length >= 2) {
+            const minY = Math.min(...gatePositions);
+            return minY + y.bandwidth() * 0.15; // Top of the wide-body span
+          }
+        }
+      }
+      
+      return yPos + y.bandwidth() * 0.10;
+    })
+    .attr("y2", (d: any) => {
+      const yPos = y(d.gate) ?? 0;
+      
+      // For wide-body aircraft, position at the TOP of the topmost gate
+      if (d.parentGate) {
+        const key = `${d.parentGate}|${d.groundStart?.getTime()}`;
+        const groupRows = wideBodyGroups.get(key) || [];
+        if (groupRows.length >= 2) {
+          const gatePositions = groupRows
+            .map((r: any) => y(r.gate))
+            .filter((p: any) => p !== undefined) as number[];
+          
+          if (gatePositions.length >= 2) {
+            const minY = Math.min(...gatePositions);
+            return minY + y.bandwidth() * 0.15; // Top of the wide-body span
+          }
+        }
+      }
+      
+      return yPos + y.bandwidth() * 0.10;
+    });
 
   sel.exit().remove();
 }
@@ -45,7 +131,8 @@ function renderStackedGroundBars(
   g: d3.Selection<SVGGElement, unknown, null, undefined>,
   rows: any[],
   x: d3.ScaleTime<number, number>,
-  y: d3.ScaleBand<string>
+  y: d3.ScaleBand<string>,
+  wideBodyGroups: Map<string, any[]>
 ) {
   // Limpiar líneas simples si existen
   g.selectAll("line.ground-line").remove();
@@ -53,6 +140,7 @@ function renderStackedGroundBars(
   // Crear data para stacked segments
   const segments: Array<{
     gate: string;
+    parentGate?: string | null;
     start: Date;
     end: Date;
     type: 'landed' | 'operation';
@@ -69,6 +157,7 @@ function renderStackedGroundBars(
       // Segmento 1: Landed time (desde groundStart hasta landedTime)
       segments.push({
         gate: d.gate,
+        parentGate: d.parentGate,
         start: groundStart,
         end: landedTime,
         type: 'landed',
@@ -78,6 +167,7 @@ function renderStackedGroundBars(
       // Segmento 2: Operation time (desde landedTime hasta operationTime)
       segments.push({
         gate: d.gate,
+        parentGate: d.parentGate,
         start: landedTime,
         end: operationTime,
         type: 'operation',
@@ -87,6 +177,7 @@ function renderStackedGroundBars(
       // Solo landed time disponible
       segments.push({
         gate: d.gate,
+        parentGate: d.parentGate,
         start: groundStart,
         end: landedTime,
         type: 'landed',
@@ -96,6 +187,7 @@ function renderStackedGroundBars(
       // Fallback a visualización simple
       segments.push({
         gate: d.gate,
+        parentGate: d.parentGate,
         start: groundStart,
         end: groundEnd,
         type: 'operation',
@@ -105,7 +197,7 @@ function renderStackedGroundBars(
   });
 
   const barHeight = 4; // Altura de cada segmento
-  const yOffset = 0.15; // Posición relativa en el row
+  const yOffset = 0.10; // Posición relativa en el row (arriba)
 
   const sel = g.selectAll<SVGRectElement, any>("rect.ground-segment")
     .data(segments, (d: any) => d.key);
@@ -114,9 +206,42 @@ function renderStackedGroundBars(
     .append("rect")
     .attr("class", (d: any) => `ground-segment ground-${d.type}`)
     .merge(sel as any)
-    .attr("x", (d: any) => x(d.start))
-    .attr("width", (d: any) => Math.max(0, x(d.end) - x(d.start)))
-    .attr("y", (d: any) => (y(d.gate) ?? 0) + y.bandwidth() * yOffset - barHeight / 2)
+    .attr("x", (d: any) => {
+      const xPos = x(d.start);
+      return Math.max(0, xPos);
+    })
+    .attr("width", (d: any) => {
+      const xStart = x(d.start);
+      const xEnd = x(d.end);
+      const xRange = x.range();
+      const maxX = xRange[1];
+      
+      const clampedStart = Math.max(0, xStart);
+      const clampedEnd = Math.min(maxX, xEnd);
+      
+      return Math.max(0, clampedEnd - clampedStart);
+    })
+    .attr("y", (d: any) => {
+      const yPos = y(d.gate) ?? 0;
+      
+      // For wide-body aircraft, position at the TOP of the topmost gate
+      if (d.parentGate) {
+        const key = `${d.parentGate}|${d.start?.getTime()}`;
+        const groupRows = wideBodyGroups.get(key) || [];
+        if (groupRows.length >= 2) {
+          const gatePositions = groupRows
+            .map((r: any) => y(r.gate))
+            .filter((p: any) => p !== undefined) as number[];
+          
+          if (gatePositions.length >= 2) {
+            const minY = Math.min(...gatePositions);
+            return minY + y.bandwidth() * 0.15 - barHeight / 2; // Top of the wide-body span
+          }
+        }
+      }
+      
+      return yPos + y.bandwidth() * yOffset - barHeight / 2;
+    })
     .attr("height", barHeight)
     .attr("fill", (d: any) => d.type === 'landed' ? '#FF9800' : '#4CAF50')
     .attr("opacity", 0.7);
