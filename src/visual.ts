@@ -1,17 +1,18 @@
-﻿"use strict";
+"use strict";
 
 import powerbi from "powerbi-visuals-api";
 import "./../style/visual.less";
 import * as d3 from "d3";
 
 import { parseDataView, applyFilters, FilterCriteria } from "./parse";
-import { ParsedData } from "./model";
+import { ParsedData, FlightRow } from "./model";
 
+import { parseDate } from "./model";
 // (por ahora no los usamos)
 import { FormattingSettingsService } from "powerbi-visuals-utils-formattingmodel";
 import { VisualFormattingSettingsModel } from "./settings";
 
-// ✅ imports de los módulos
+// imports de los módulos
 import { buildColorScale, getColorKey } from "./campos/color";
 import { renderGroundLines } from "./campos/ground";
 import { renderScheduledBars } from "./campos/scheduled";
@@ -48,8 +49,9 @@ export class Visual implements IVisual {
   private data: ParsedData | null = null;
 
   // ===== Filters =====
-  private filters = {
-    date: null as Date | null,
+  private filters: FilterCriteria = {
+    startDate: null as Date | null,
+    endDate: null as Date | null,
     timeMin: 0,
     timeMax: 24,
     terminal: "",
@@ -84,7 +86,7 @@ export class Visual implements IVisual {
     this.root.style.flexDirection = "column";
     this.target.appendChild(this.root);
 
-    // ✅ Filter bar (header)
+    //  Filter bar (header)
     const filterBar = document.createElement("div");
     filterBar.id = "filter-bar";
     filterBar.style.display = "flex";
@@ -135,7 +137,8 @@ export class Visual implements IVisual {
     };
 
     // Add filter controls
-    createFilterControl("Date", "filter-date", "date");
+    createFilterControl("Start Date", "filter-date-start", "date");
+    createFilterControl("End Date", "filter-date-end", "date");
     createFilterControl("Time View (hr)", "filter-time", "text");
     createFilterControl("Terminal", "filter-terminal", "text");
     createFilterControl("Gate", "filter-gate", "text");
@@ -143,10 +146,11 @@ export class Visual implements IVisual {
     createFilterControl("Flight #", "filter-flight", "text");
     createFilterControl("Tail", "filter-tail", "text");
 
-    // ✅ Add event listeners to filters
+    // Add event listeners to filters
     const updateFilterHandler = () => this.applyFiltersAndUpdate();
 
-    document.getElementById("filter-date")?.addEventListener("change", updateFilterHandler);
+    document.getElementById("filter-date-start")?.addEventListener("change", updateFilterHandler);
+    document.getElementById("filter-date-end")?.addEventListener("change", updateFilterHandler);
     document.getElementById("filter-time")?.addEventListener("change", updateFilterHandler);
     document.getElementById("filter-terminal")?.addEventListener("input", updateFilterHandler);
     document.getElementById("filter-gate")?.addEventListener("input", updateFilterHandler);
@@ -197,16 +201,88 @@ export class Visual implements IVisual {
       this.formattingSettings.displayCard.colorDimension.value as any
     ).value as string;
 
-    const viewportW = options.viewport.width;
-    const viewportH = options.viewport.height;
+    // Sync filters from UI so refresh/update respects current selections
+    this.readFiltersFromInputs();
 
-    // =========================================================
-    // ✅ REQUISITO 3a & 3b: Dominio de tiempo dinámico
-    // - Máximo 24 horas
-    // - Auto-zoom si los datos tienen menos de 24h
-    // =========================================================
+    this.renderWithFilters(
+      { width: options.viewport.width, height: options.viewport.height },
+      colorDimension
+    );
+  }
+
+  private renderWithFilters(
+    viewport: { width: number; height: number },
+    colorDimension: string
+  ): void {
+    if (!this.data) return;
+    const filteredData = this.buildFilteredData(this.data);
+    if (!filteredData) return;
+
+    this.renderFilteredData(filteredData, viewport, colorDimension);
+  }
+
+  private renderFilteredData(
+    filteredData: ParsedData,
+    viewport: { width: number; height: number },
+    colorDimension: string
+  ): void {
+    const t0 = filteredData.timeDomain[0];
+    const t1 = filteredData.timeDomain[1];
+    const hours = Math.ceil((t1.getTime() - t0.getTime()) / (60 * 60 * 1000));
+
+    // ---- Virtual canvas size (scroll) ----
+    const innerW = Math.max(
+      viewport.width,
+      this.margin.left + this.margin.right + hours * this.pxPerHour
+    );
+
+    const innerH = Math.max(
+      viewport.height,
+      this.margin.top + this.margin.bottom + filteredData.gates.length * this.rowHeight
+    );
+
+    this.svg.attr("width", innerW).attr("height", innerH);
+    this.gRoot.attr("transform", `translate(${this.margin.left},${this.margin.top})`);
+
+    const plotW = innerW - this.margin.left - this.margin.right;
+    const plotH = innerH - this.margin.top - this.margin.bottom;
+
+    const x = d3.scaleTime().domain([t0, t1]).range([0, plotW]);
+    const y = d3.scaleBand<string>().domain(filteredData.gates).range([0, plotH]).paddingInner(0.25);
+
+    // ---- Axes + layers ----
+    this.renderAxesAndLayers(x, y, plotW);
+
+    // ---- Color ----
+    const color = buildColorScale(filteredData, colorDimension);
+
+    // ---- Render (orden correcto) ----
+    if (this.groundG) renderGroundLines(this.groundG, filteredData, x, y);
+    if (this.scheduledG) renderScheduledBars(this.scheduledG, filteredData, x, y);
+
+    // ? primero barras actual
+    if (this.barsG) {
+      renderActualBars(
+        this.barsG,
+        filteredData,
+        x,
+        y,
+        color,
+        this.selectionManager,
+        this.host,
+        colorDimension
+      );
+      renderTowEdges(this.barsG, filteredData, x, y);
+    }
+
+    if (this.labelsG) renderActualLabels(this.labelsG, filteredData, x, y);
+    if (this.nowLineG) renderNowLine(this.nowLineG, x, plotH, [t0, t1]);
+  }
+
+  private computeTimeDomain(rows: FlightRow[]): [Date, Date] | null {
+    // Dominio dinamico, max 24h con padding si hay menos datos
     const coreDates: Date[] = [];
-    this.data.rows.forEach((d) => {
+    rows.forEach((d) => {
       [
         d.groundStart,
         d.groundEnd,
@@ -219,94 +295,98 @@ export class Visual implements IVisual {
       });
     });
 
-    if (!coreDates.length) return;
+    if (!coreDates.length) return null;
 
     const dataMin = new Date(Math.min(...coreDates.map((d) => d.getTime())));
     const dataMax = new Date(Math.max(...coreDates.map((d) => d.getTime())));
 
-    // Calcular span de datos en horas
     const dataSpanHours =
       (dataMax.getTime() - dataMin.getTime()) / (60 * 60 * 1000);
 
-    let t0: Date, t1: Date, hours: number;
-
     if (dataSpanHours < 24) {
-      // REQUISITO 3b: Auto-zoom cuando hay menos de 24h de datos
-      // Agregar 1h de padding a cada lado
-      t0 = new Date(dataMin.getTime() - 1 * 60 * 60 * 1000);
-      t1 = new Date(dataMax.getTime() + 1 * 60 * 60 * 1000);
-      hours = Math.ceil((t1.getTime() - t0.getTime()) / (60 * 60 * 1000));
-    } else {
-      // REQUISITO 3a: Ventana fija de 24h desde el mínimo
-      t0 = new Date(dataMin.getTime());
-      t1 = new Date(t0.getTime() + 24 * 60 * 60 * 1000);
-      hours = 24;
+      const t0 = new Date(dataMin.getTime() - 1 * 60 * 60 * 1000);
+      const t1 = new Date(dataMax.getTime() + 1 * 60 * 60 * 1000);
+      return [t0, t1];
     }
 
-    // ---- Virtual canvas size (scroll) ----
-    const innerW = Math.max(
-      viewportW,
-      this.margin.left + this.margin.right + hours * this.pxPerHour
-    );
-
-    const innerH = Math.max(
-      viewportH,
-      this.margin.top +
-        this.margin.bottom +
-        this.data.gates.length * this.rowHeight
-    );
-
-    this.svg.attr("width", innerW).attr("height", innerH);
-    this.gRoot.attr(
-      "transform",
-      `translate(${this.margin.left},${this.margin.top})`
-    );
-
-    const plotW = innerW - this.margin.left - this.margin.right;
-    const plotH = innerH - this.margin.top - this.margin.bottom;
-
-    // ---- Scales ----
-    const x = d3.scaleTime().domain([t0, t1]).range([0, plotW]);
-
-    const y = d3
-      .scaleBand<string>()
-      .domain(this.data.gates)
-      .range([0, plotH])
-      .paddingInner(0.25);
-
-    // ---- Axes + layers ----
-    this.renderAxesAndLayers(x, y, plotW);
-
-    // ---- Color ----
-    const color = buildColorScale(this.data, colorDimension);
-
-    // ---- Render (orden correcto) ----
-    if (this.groundG) renderGroundLines(this.groundG, this.data, x, y);
-    if (this.scheduledG) renderScheduledBars(this.scheduledG, this.data, x, y);
-
-    // ✅ primero barras actual
-    if (this.barsG) {
-      renderActualBars(
-        this.barsG,
-        this.data,
-        x,
-        y,
-        color,
-        this.selectionManager,
-        this.host,
-        colorDimension
-      );
-      // ✅ después dentado pegado y mismo color
-      renderTowEdges(this.barsG, this.data, x, y);
-    }
-
-    // ✅ texto al final arriba de todo
-    if (this.labelsG) renderActualLabels(this.labelsG, this.data, x, y);
-
-    // ✅ Línea NOW (si está en el rango visible)
-    if (this.nowLineG) renderNowLine(this.nowLineG, x, plotH, [t0, t1]);
+    const t0 = new Date(dataMin.getTime());
+    const t1 = new Date(t0.getTime() + 24 * 60 * 60 * 1000);
+    return [t0, t1];
   }
 
+  private applyTimeViewport(domain: [Date, Date]): [Date, Date] {
+    if (this.filters.timeMin <= 0 && this.filters.timeMax >= 24) {
+      return domain;
+    }
+
+    const baseDate = domain[0];
+    const year = baseDate.getFullYear();
+    const month = baseDate.getMonth();
+    const day = baseDate.getDate();
+
+    const startDate = new Date(year, month, day, this.filters.timeMin, 0, 0);
+    const endDate = new Date(year, month, day, this.filters.timeMax, 0, 0);
+
+    return [startDate, endDate];
+  }
+
+  private readFiltersFromInputs(): void {
+    const startDateInput = document.getElementById("filter-date-start") as HTMLInputElement | null;
+    const endDateInput = document.getElementById("filter-date-end") as HTMLInputElement | null;
+    const timeInput = document.getElementById("filter-time") as HTMLInputElement | null;
+    const terminalInput = document.getElementById("filter-terminal") as HTMLInputElement | null;
+    const gateInput = document.getElementById("filter-gate") as HTMLInputElement | null;
+    const airlineInput = document.getElementById("filter-airline") as HTMLInputElement | null;
+    const flightInput = document.getElementById("filter-flight") as HTMLInputElement | null;
+    const tailInput = document.getElementById("filter-tail") as HTMLInputElement | null;
+
+    // Parse fechas usando parseDate para soportar DD/MM/YYYY y el formato del input date (YYYY-MM-DD)
+    const parseDateInput = (val: string | undefined | null) => {
+      if (!val) return null;
+      // Si viene del input date, es YYYY-MM-DD → conviértelo a Date local
+      if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+        const [y, m, d] = val.split("-").map((n) => parseInt(n, 10));
+        return new Date(y, m - 1, d, 0, 0, 0, 0);
+      }
+      // Si viene como DD/MM/YYYY o con hora, usa parseDate común
+      return parseDate(val);
+    };
+
+    this.filters.startDate = parseDateInput(startDateInput?.value);
+    this.filters.endDate = parseDateInput(endDateInput?.value);
+    this.filters.terminal = terminalInput?.value || "";
+    this.filters.gate = gateInput?.value || "";
+    this.filters.airline = airlineInput?.value || "";
+    this.filters.flightNumber = flightInput?.value || "";
+    this.filters.tail = tailInput?.value || "";
+
+    this.filters.timeMin = 0;
+    this.filters.timeMax = 24;
+    if (timeInput?.value) {
+      const timeParts = timeInput.value.split("-");
+      if (timeParts.length === 2) {
+        this.filters.timeMin = parseInt(timeParts[0]) || 0;
+        this.filters.timeMax = parseInt(timeParts[1]) || 24;
+      }
+    }
+  }
+
+  private buildFilteredData(baseData: ParsedData): ParsedData | null {
+    const filteredRows = applyFilters(baseData.rows, this.filters);
+    const filteredGates = Array.from(new Set(filteredRows.map((d) => d.gate))).sort();
+
+    const domainSourceRows = filteredRows.length ? filteredRows : baseData.rows;
+    const computedDomain = this.computeTimeDomain(domainSourceRows) || baseData.timeDomain;
+    if (!computedDomain) return null;
+
+    const timeDomain = this.applyTimeViewport(computedDomain);
+
+    return {
+      rows: filteredRows,
+      gates: filteredGates,
+      timeDomain
+    };
+  }
   private renderAxesAndLayers(
     x: d3.ScaleTime<number, number>,
     y: d3.ScaleBand<string>,
@@ -351,118 +431,18 @@ export class Visual implements IVisual {
     grid.exit().remove();
   }
 
-  // ✅ Apply filters and re-render
+  // Apply filters and re-render
+
   private applyFiltersAndUpdate(): void {
     if (!this.data) return;
 
-    // Get filter values from UI
-    const dateInput = document.getElementById("filter-date") as HTMLInputElement | null;
-    const timeInput = document.getElementById("filter-time") as HTMLInputElement | null;
-    const terminalInput = document.getElementById("filter-terminal") as HTMLInputElement | null;
-    const gateInput = document.getElementById("filter-gate") as HTMLInputElement | null;
-    const airlineInput = document.getElementById("filter-airline") as HTMLInputElement | null;
-    const flightInput = document.getElementById("filter-flight") as HTMLInputElement | null;
-    const tailInput = document.getElementById("filter-tail") as HTMLInputElement | null;
+    this.readFiltersFromInputs();
 
-    // Parse filter values
-    this.filters = {
-      date: dateInput?.value ? new Date(dateInput.value) : null,
-      timeMin: 0,
-      timeMax: 24,
-      terminal: terminalInput?.value || "",
-      gate: gateInput?.value || "",
-      airline: airlineInput?.value || "",
-      flightNumber: flightInput?.value || "",
-      tail: tailInput?.value || ""
-    };
-
-    // Parse time range if provided
-    if (timeInput?.value) {
-      const timeParts = timeInput.value.split("-");
-      if (timeParts.length === 2) {
-        this.filters.timeMin = parseInt(timeParts[0]) || 0;
-        this.filters.timeMax = parseInt(timeParts[1]) || 24;
-      }
-    }
-
-
-
-    const filteredRows = applyFilters(this.data.rows, this.filters);
-
-
-
-    // Update gates based on filtered data
-    const filteredGates = Array.from(new Set(filteredRows.map((d) => d.gate))).sort();
-
-    // Adjust timeDomain based on time range (viewport control, not filter)
-    let adjustedTimeDomain: [Date, Date] = this.data.timeDomain;
-
-    if (this.filters.timeMin > 0 || this.filters.timeMax < 24) {
-      // Get the date from the first data point
-      const baseDate = this.data.timeDomain[0];
-      const year = baseDate.getFullYear();
-      const month = baseDate.getMonth();
-      const day = baseDate.getDate();
-
-      // Create new time domain with specified hours
-      const startDate = new Date(year, month, day, this.filters.timeMin, 0, 0);
-      const endDate = new Date(year, month, day, this.filters.timeMax, 0, 0);
-
-      adjustedTimeDomain = [startDate, endDate];
-
-    }
-
-    // Re-render with filtered data and adjusted time domain
-    const filteredData: ParsedData = {
-      rows: filteredRows,
-      gates: filteredGates,
-      timeDomain: adjustedTimeDomain
-    };
-
-    // Clear SVG layers
-    if (this.groundG) this.groundG.selectAll("*").remove();
-    if (this.scheduledG) this.scheduledG.selectAll("*").remove();
-    if (this.barsG) this.barsG.selectAll("*").remove();
-    if (this.labelsG) this.labelsG.selectAll("*").remove();
-    if (this.nowLineG) this.nowLineG.selectAll("*").remove();
-
-    // Re-render (simplified - sin viewport update para mantener simple)
-    // En update() hay lógica completa, aquí hacemos lo mismo
-    const viewport = { width: this.scroll.clientWidth, height: this.scroll.clientHeight };
-
-    // Recalcular scales con datos filtrados
-    const t0 = filteredData.timeDomain[0];
-    const t1 = filteredData.timeDomain[1];
-    const hours = Math.ceil((t1.getTime() - t0.getTime()) / (60 * 60 * 1000));
-
-    const innerW = Math.max(viewport.width, this.margin.left + this.margin.right + hours * this.pxPerHour);
-    const innerH = Math.max(viewport.height, this.margin.top + this.margin.bottom + filteredData.gates.length * this.rowHeight);
-
-    this.svg.attr("width", innerW).attr("height", innerH);
-    this.gRoot.attr("transform", `translate(${this.margin.left},${this.margin.top})`);
-
-    const plotW = innerW - this.margin.left - this.margin.right;
-    const plotH = innerH - this.margin.top - this.margin.bottom;
-
-    const x = d3.scaleTime().domain([t0, t1]).range([0, plotW]);
-    const y = d3.scaleBand<string>().domain(filteredData.gates).range([0, plotH]).paddingInner(0.25);
-
-    // Re-render axes
-    this.renderAxesAndLayers(x, y, plotW);
-
-    // Color
     const colorDimension = (this.formattingSettings?.displayCard.colorDimension.value as any)?.value as string || "airline";
-    const color = buildColorScale(filteredData, colorDimension);
-
-    // Render
-    if (this.groundG) renderGroundLines(this.groundG, filteredData, x, y);
-    if (this.scheduledG) renderScheduledBars(this.scheduledG, filteredData, x, y);
-    if (this.barsG) {
-      renderActualBars(this.barsG, filteredData, x, y, color, this.selectionManager, this.host, colorDimension);
-      renderTowEdges(this.barsG, filteredData, x, y);
-    }
-    if (this.labelsG) renderActualLabels(this.labelsG, filteredData, x, y);
-    if (this.nowLineG) renderNowLine(this.nowLineG, x, plotH, [t0, t1]);
+    this.renderWithFilters(
+      { width: this.scroll.clientWidth, height: this.scroll.clientHeight },
+      colorDimension
+    );
   }
 
   public getFormattingModel(): powerbi.visuals.FormattingModel {

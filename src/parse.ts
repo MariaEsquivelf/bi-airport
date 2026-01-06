@@ -1,9 +1,9 @@
 import powerbi from "powerbi-visuals-api";
 import { FlightRow, ParsedData, parseDate } from "./model";
 
-// ✅ Interfaz para filtros
 export interface FilterCriteria {
-  date: Date | null;
+  startDate: Date | null;
+  endDate: Date | null;
   timeMin: number;
   timeMax: number;
   terminal: string;
@@ -15,17 +15,34 @@ export interface FilterCriteria {
 
 export function applyFilters(rows: FlightRow[], filters: FilterCriteria): FlightRow[] {
 
+  const startMs = filters.startDate
+    ? new Date(filters.startDate.getFullYear(), filters.startDate.getMonth(), filters.startDate.getDate(), 0, 0, 0, 0).getTime()
+    : null;
+
+  const endMs = filters.endDate
+    ? new Date(filters.endDate.getFullYear(), filters.endDate.getMonth(), filters.endDate.getDate(), 23, 59, 59, 999).getTime()
+    : null;
+
   return rows.filter(row => {
     // Filter by date (si está setear, comparar solo la fecha)
-    if (filters.date) {
-      const rowDate = row.actualStart || row.towOn;
-      if (rowDate) {
-        const rowDateOnly = new Date(rowDate.getFullYear(), rowDate.getMonth(), rowDate.getDate());
-        const filterDateOnly = new Date(filters.date.getFullYear(), filters.date.getMonth(), filters.date.getDate());
-        if (rowDateOnly.getTime() !== filterDateOnly.getTime()) {
-          return false;
-        }
-      }
+    if (filters.startDate || filters.endDate) {
+      const rowDate =
+  row.actualStart ||
+  row.towOn ||
+  row.scheduledStart ||
+  row.groundStart ||
+  row.actualEnd ||
+  row.towOff ||
+  row.scheduledEnd ||
+  row.groundEnd;
+
+if (!rowDate) return false; // si hay filtro de fecha, sin fecha NO entra
+
+const rowMs = rowDate.getTime();
+
+if (startMs !== null && rowMs < startMs) return false;
+if (endMs !== null && rowMs > endMs) return false;
+
     }
 
     // NOTE: Time filter removed - now controls viewport instead of filtering rows

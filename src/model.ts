@@ -51,7 +51,39 @@ export interface ParsedData {
 
 export function parseDate(value: any): Date | null {
   if (!value) return null;
-  const d = new Date(value);
+
+  // Already a Date instance
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? null : value;
+  }
+
+  // Numeric timestamp
+  if (typeof value === "number") {
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  const str = String(value).trim();
+  if (!str) return null;
+
+  // Support DD/MM/YYYY HH:mm[:ss] (or DD/MM/YYYY without time)
+  const ddmmyyyy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+  const match = str.match(ddmmyyyy);
+  if (match) {
+    const [, ddStr, mmStr, yyyyStr, hhStr, minStr, ssStr] = match;
+    const dd = parseInt(ddStr, 10);
+    const mm = parseInt(mmStr, 10) - 1; // month is 0-based
+    const yyyy = parseInt(yyyyStr, 10);
+    const hh = hhStr ? parseInt(hhStr, 10) : 0;
+    const min = minStr ? parseInt(minStr, 10) : 0;
+    const ss = ssStr ? parseInt(ssStr, 10) : 0;
+
+    const d = new Date(yyyy, mm, dd, hh, min, ss, 0);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // Fallback to native parsing for other formats
+  const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
 }
 
