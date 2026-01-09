@@ -11,7 +11,8 @@ export function renderActualBars(
   color: d3.ScaleOrdinal<string, string>,
   selectionManager: powerbi.extensibility.ISelectionManager,
   host: powerbi.extensibility.visual.IVisualHost,
-  colorDimension: string = "actualColor"
+  colorDimension: string = "actualColor",
+  applyFilterCallback?: (row: FlightRow) => void
 ) {
 
   const rows = data.rows.filter(d => {
@@ -169,6 +170,11 @@ export function renderActualBars(
         .then((ids: powerbi.visuals.ISelectionId[]) => {
           bars.style("opacity", ids.length > 0 ? 0.3 : 1);
           d3.select(this).style("opacity", 1);
+          
+          // Aplicar filtro cruzado a otras visualizaciones
+          if (applyFilterCallback && ids.length > 0) {
+            applyFilterCallback(d);
+          }
         });
     }
   });

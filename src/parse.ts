@@ -78,8 +78,13 @@ if (endMs !== null && rowMs > endMs) return false;
         airlineToCheck = row.actualColor;
       }
 
+      if (!airlineToCheck) {
+        return false;
+      }
 
-      if (!airlineToCheck || !airlineToCheck.toLowerCase().includes(filters.airline.toLowerCase())) {
+      const airlineLower = String(airlineToCheck).trim().toLowerCase();
+      const filterLower = String(filters.airline).trim().toLowerCase();
+      if (!airlineLower.includes(filterLower)) {
         return false;
       }
     }
@@ -94,8 +99,13 @@ if (endMs !== null && rowMs > endMs) return false;
         flightNumberToCheck = row.actualText;
       }
 
+      if (!flightNumberToCheck) {
+        return false;
+      }
 
-      if (!flightNumberToCheck || !flightNumberToCheck.toLowerCase().includes(filters.flightNumber.toLowerCase())) {
+      const flightNumberLower = String(flightNumberToCheck).trim().toLowerCase();
+      const filterLower = String(filters.flightNumber).trim().toLowerCase();
+      if (!flightNumberLower.includes(filterLower)) {
         return false;
       }
     }

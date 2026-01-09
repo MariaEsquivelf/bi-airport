@@ -38,6 +38,12 @@
 
   "dataViewMappings": [
     {
+      "conditions": [
+        {
+          "gate": { "max": 1 },
+          "tooltips": { "max": 10 }
+        }
+      ],
       "table": {
         "rows": {
           "select": [
@@ -75,7 +81,12 @@
             { "for": { "in": "domesticIntl" } },
             
             { "for": { "in": "tooltips" } }
-          ]
+          ],
+          "dataReductionAlgorithm": {
+            "top": {
+              "count": 30000
+            }
+          }
         }
       }
     }

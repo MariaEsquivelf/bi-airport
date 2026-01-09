@@ -47,6 +47,9 @@ export class Visual implements IVisual {
 
   // ===== Data =====
   private data: ParsedData | null = null;
+  private legendDiv!: HTMLDivElement;
+  private hasManualSelection: boolean = false;
+  private noMatchMessageDiv!: HTMLDivElement | null;
 
   // ===== Filters =====
   private filters: FilterCriteria = {
@@ -146,17 +149,65 @@ export class Visual implements IVisual {
     createFilterControl("Flight #", "filter-flight", "text");
     createFilterControl("Tail", "filter-tail", "text");
 
-    // Add event listeners to filters
-    const updateFilterHandler = () => this.applyFiltersAndUpdate();
+    // Function to apply filters - captura valores del DOM justo antes de aplicar
+    let filterTimeout: number | null = null;
+    const applyFiltersWithDelay = () => {
+      if (filterTimeout !== null) {
+        clearTimeout(filterTimeout);
+      }
+      
+      filterTimeout = window.setTimeout(() => {
+        // Capturar los valores directamente del DOM justo antes de aplicar
+        const terminalInput = document.getElementById("filter-terminal") as HTMLInputElement | null;
+        const gateInput = document.getElementById("filter-gate") as HTMLInputElement | null;
+        const airlineInput = document.getElementById("filter-airline") as HTMLInputElement | null;
+        const flightInput = document.getElementById("filter-flight") as HTMLInputElement | null;
+        const tailInput = document.getElementById("filter-tail") as HTMLInputElement | null;
 
-    document.getElementById("filter-date-start")?.addEventListener("change", updateFilterHandler);
-    document.getElementById("filter-date-end")?.addEventListener("change", updateFilterHandler);
-    document.getElementById("filter-time")?.addEventListener("change", updateFilterHandler);
-    document.getElementById("filter-terminal")?.addEventListener("input", updateFilterHandler);
-    document.getElementById("filter-gate")?.addEventListener("input", updateFilterHandler);
-    document.getElementById("filter-airline")?.addEventListener("input", updateFilterHandler);
-    document.getElementById("filter-flight")?.addEventListener("input", updateFilterHandler);
-    document.getElementById("filter-tail")?.addEventListener("input", updateFilterHandler);
+        // Actualizar state de filtros (como setState en React)
+        this.filters.terminal = terminalInput?.value || "";
+        this.filters.gate = gateInput?.value || "";
+        this.filters.airline = airlineInput?.value || "";
+        this.filters.flightNumber = flightInput?.value || "";
+        this.filters.tail = tailInput?.value || "";
+
+        // Aplicar los filtros actualizados
+        this.applyFiltersAndUpdate();
+        filterTimeout = null;
+      }, 300); // 300ms delay después de dejar de escribir
+    };
+
+    // Para campos de fecha - aplicar automáticamente
+    const dateHandler = () => {
+      this.readFiltersFromInputs();
+      this.applyFiltersAndUpdate();
+    };
+
+    document.getElementById("filter-date-start")?.addEventListener("change", dateHandler);
+    document.getElementById("filter-date-end")?.addEventListener("change", dateHandler);
+    document.getElementById("filter-time")?.addEventListener("change", dateHandler);
+    
+    // Para campos de texto - aplicar automáticamente con debounce
+    const textFilterIds = ["filter-terminal", "filter-gate", "filter-airline", "filter-flight", "filter-tail"];
+    textFilterIds.forEach(id => {
+      const element = document.getElementById(id);
+      if (element) {
+        element.addEventListener("input", applyFiltersWithDelay);
+      }
+    });
+
+    // Legend container
+    this.legendDiv = document.createElement("div");
+    this.legendDiv.id = "color-legend";
+    this.legendDiv.style.display = "flex";
+    this.legendDiv.style.gap = "16px";
+    this.legendDiv.style.padding = "8px 12px";
+    this.legendDiv.style.backgroundColor = "#ffffff";
+    this.legendDiv.style.borderBottom = "1px solid #ddd";
+    this.legendDiv.style.flexWrap = "wrap";
+    this.legendDiv.style.alignItems = "center";
+    this.legendDiv.style.fontSize = "11px";
+    this.root.appendChild(this.legendDiv);
 
     // Scroll container
     this.scroll = document.createElement("div");
@@ -175,7 +226,10 @@ export class Visual implements IVisual {
     // Allow selection to be cleared by clicking on background
     this.svg.on("click", (event) => {
       if (event.target === (this.svg.node() as any)) {
-        this.selectionManager.clear();
+        this.selectionManager.clear().then(() => {
+          // Al limpiar la selección manual, reaplicar filtros de texto si existen
+          this.applyFiltersToOtherVisuals();
+        });
       }
     });
   }
@@ -256,6 +310,9 @@ export class Visual implements IVisual {
     // ---- Color ----
     const color = buildColorScale(filteredData, colorDimension);
 
+    // ---- Update legend ----
+    this.updateLegend(color, colorDimension);
+
     // ---- Render (orden correcto) ----
     if (this.groundG) renderGroundLines(this.groundG, filteredData, x, y);
     if (this.scheduledG) renderScheduledBars(this.scheduledG, filteredData, x, y);
@@ -270,7 +327,8 @@ export class Visual implements IVisual {
         color,
         this.selectionManager,
         this.host,
-        colorDimension
+        colorDimension,
+        (row: FlightRow) => this.applySelectionFilter(row)
       );
       renderTowEdges(this.barsG, filteredData, x, y);
     }
@@ -436,13 +494,95 @@ export class Visual implements IVisual {
   private applyFiltersAndUpdate(): void {
     if (!this.data) return;
 
-    this.readFiltersFromInputs();
+    // Los filtros de texto ya están actualizados directamente en los event handlers
+    // Solo necesitamos leer las fechas y tiempo si no se actualizaron directamente
 
     const colorDimension = (this.formattingSettings?.displayCard.colorDimension.value as any)?.value as string || "airline";
     this.renderWithFilters(
       { width: this.scroll.clientWidth, height: this.scroll.clientHeight },
       colorDimension
     );
+
+    // Aplicar filtros a otras visualizaciones de PowerBI
+    this.applyFiltersToOtherVisuals();
+  }
+
+  private updateLegend(
+    color: d3.ScaleOrdinal<string, string>,
+    colorDimension: string
+  ): void {
+    if (!this.legendDiv) return;
+
+    // Clear existing content safely
+    while (this.legendDiv.firstChild) {
+      this.legendDiv.removeChild(this.legendDiv.firstChild);
+    }
+
+    const title = document.createElement("span");
+    title.textContent = "Legend:";
+    title.style.fontWeight = "bold";
+    title.style.marginRight = "8px";
+    this.legendDiv.appendChild(title);
+
+    const domain = color.domain();
+    domain.forEach(key => {
+      const item = document.createElement("div");
+      item.style.display = "flex";
+      item.style.alignItems = "center";
+      item.style.gap = "4px";
+
+      const colorBox = document.createElement("div");
+      colorBox.style.width = "16px";
+      colorBox.style.height = "16px";
+      colorBox.style.backgroundColor = color(key);
+      colorBox.style.borderRadius = "2px";
+      colorBox.style.border = "1px solid #ccc";
+
+      const label = document.createElement("span");
+      label.textContent = key;
+
+      item.appendChild(colorBox);
+      item.appendChild(label);
+      this.legendDiv.appendChild(item);
+    });
+  }
+
+  private applyFiltersToOtherVisuals(): void {
+    if (!this.data || !this.data.rows) return;
+
+    // Verificar si hay filtros activos
+    const hasActiveFilters = this.filters.terminal || this.filters.gate || 
+                            this.filters.airline || this.filters.flightNumber || 
+                            this.filters.tail;
+
+    if (!hasActiveFilters) {
+      // Si no hay filtros, limpiar cualquier selección previa
+      this.selectionManager.clear();
+      return;
+    }
+
+    // Usar la MISMA función applyFilters que se usa internamente para filtrar el visual
+    // Esto garantiza que la tabla muestre exactamente lo mismo que el visual
+    const matchingRows = applyFilters(this.data.rows, this.filters);
+
+    // Recoger los IDs de selección de las filas que coinciden
+    const selectionIds = matchingRows
+      .map(row => row.identity)
+      .filter((id): id is powerbi.visuals.ISelectionId => id !== undefined);
+
+    // IMPORTANTE: Siempre limpiar primero antes de aplicar nueva selección
+    // Esto evita problemas de estado inconsistente
+    this.selectionManager.clear().then(() => {
+      // Después de limpiar, aplicar la nueva selección
+      if (selectionIds.length > 0) {
+        this.selectionManager.select(selectionIds, false);
+      }
+    });
+  }
+
+  private applySelectionFilter(row: FlightRow): void {
+    // La selección ya aplica filtros cruzados automáticamente en PowerBI
+    // No necesitamos hacer nada adicional aquí
   }
 
   public getFormattingModel(): powerbi.visuals.FormattingModel {
